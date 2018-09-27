@@ -1,5 +1,1 @@
 src/*
-!src/github.com
-
-src/github.com/*
-!src/github.com/tlhakhan
