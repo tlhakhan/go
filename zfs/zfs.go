@@ -3,7 +3,9 @@ package zfs
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"github.com/pkg/errors"
+	"sort"
 	"strings"
 )
 
@@ -12,16 +14,13 @@ type Zpool struct {
 	Name string
 }
 
-// Filesystem type
-type Filesystem struct {
-	Name   string `json:"name"`
-	Origin string `json:"origin"`
-}
+type Database []Dataset
 
-// Snapshot type
-type Snapshot struct {
-	Name string `json:"name"`
-	GUID string `json:"guid"`
+type Dataset struct {
+	Name   string `json:"dataset"`
+	Type   string `json:"type"`
+	Origin string `json:"origin"`
+	GUID   string `json:"guid"`
 }
 
 // Zpool factory function returns a Zpool type to operate against and pass around
@@ -37,45 +36,41 @@ func New(zpoolName string) (*Zpool, error) {
 	return &Zpool{zpoolName}, nil
 }
 
-// Does dataset exist?
 func (z *Zpool) Exists(datasetName string) bool {
-
-	// guard against empty names
-	if datasetName == "" {
-		return false
-	}
-
-	// script to get the name of the dataset given
-	script := []byte(`zfs get -Ho name name $0`)
-	_, err := executeScript(script, datasetName)
+	db, err := z.GetDatabase()
 	if err != nil {
-		return false
+		// not good
+		panic(err)
 	}
-	return true
+
+	found := sort.Search(len(db), func(i int) bool { return db[i].Name == datasetName })
+	if found < len(db) && db[found].Name == datasetName {
+		return true
+	}
+	return false
 }
 
-// GetSnapshots gets an array of snapshots for the given filesystem name.  Snapshots array is ordered by createtxg from oldest to newest.
-func (z *Zpool) GetSnapshots(filesystemName string) ([]Snapshot, error) {
+func (z *Zpool) GetDatabase() (Database, error) {
 
-	script := []byte(`zfs list -Hpro name,guid -s createtxg -t snapshot -d1 $0`)
+	script := []byte(`zfs list -Hpro name,type,origin,guid -s createtxg -t all $0`)
 
-	out, err := executeScript(script, filesystemName)
+	out, err := executeScript(script, z.Name)
 	if err != nil {
-		return nil, errors.Wrapf(err, "unable to get snapshots for filesystem %q.", filesystemName)
+		return nil, errors.Wrapf(err, "unable to get dataset list for %q.", z.Name)
 	}
 
 	// initialize slice
-	snapshots := make([]Snapshot, 0)
+	db := make(Database, 0)
 
 	// parse output
 	scanner := bufio.NewScanner(bytes.NewReader(out))
 	for scanner.Scan() {
 		line := scanner.Text()
 		fields := strings.Fields(line)
-		snapshots = append(snapshots, Snapshot{fields[0], fields[1]})
+		db = append(db, Dataset{fields[0], fields[1], fields[2], fields[3]})
 	}
-	return snapshots, nil
 
+	return db, nil
 }
 
 // Create the filesystem
@@ -93,54 +88,4 @@ func (z *Zpool) CreateFilesystem(filesystemName string) error {
 	}
 
 	return nil
-}
-
-// GetFilesystem ...
-func (z *Zpool) GetFilesystem(filesystemName string) (Filesystem, error) {
-	script := []byte(`
-                        filesystem=$0
-                        zfs list -Ho name,origin -s createtxg -t filesystem ${filesystem}
-                    `)
-
-	out, err := executeScript(script, filesystemName)
-	if err != nil {
-		return Filesystem{}, errors.Wrapf(err, "unable to get filesystem %q.", filesystemName)
-	}
-
-	fields := strings.Fields(string(out))
-	return Filesystem{fields[0], fields[1]}, nil
-}
-
-// Get all filesystems on the zpool, the array will be ordered by createtxg from oldest to newest.
-func (z *Zpool) GetFilesystems() ([]Filesystem, error) {
-	script := []byte(`
-                        zpool=$0
-                        zfs list -Hro name,origin -s createtxg -t filesystem ${zpool}
-                    `)
-
-	out, err := executeScript(script, z.Name)
-	if err != nil {
-		return nil, errors.Wrapf(err, "unable to get filesystems for zpool %q.", z.Name)
-	}
-
-	filesystems := make([]Filesystem, 0)
-	scanner := bufio.NewScanner(bytes.NewReader(out))
-	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		filesystems = append(filesystems, Filesystem{fields[0], fields[1]})
-	}
-	return filesystems, nil
-}
-
-// Get the zpool status.
-func (z *Zpool) GetStatus() ([]byte, error) {
-	script := []byte(`
-                        zpool=$0
-                        zpool status $zpool
-                    `)
-	out, err := executeScript(script, z.Name)
-	if err != nil {
-		return nil, errors.Wrapf(err, "unable to get zpool status on %q.", z.Name)
-	}
-	return out, nil
 }
